@@ -1,0 +1,260 @@
+---
+title: "Recommendation System Report"
+author: "Anil Nanayakkara"
+date: "March 1, 2019"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE)
+```
+
+## R Markdown
+
+Machine Learning Algorithm for Movie Recommendation System
+
+```{r cars}
+#############################################################
+# Create edx set, validation set, and submission file
+#############################################################
+
+# Note: this process could take a couple of minutes
+
+if(!require(tidyverse)) install.packages("tidyverse", repos = "http://cran.us.r-project.org")
+if(!require(caret)) install.packages("caret", repos = "http://cran.us.r-project.org")
+
+# MovieLens 10M dataset:
+# https://grouplens.org/datasets/movielens/10m/
+# http://files.grouplens.org/datasets/movielens/ml-10m.zip
+
+dl <- tempfile()
+download.file("http://files.grouplens.org/datasets/movielens/ml-10m.zip", dl)
+
+ratings <- read.table(text = gsub("::", "\t", readLines(unzip(dl, "ml-10M100K/ratings.dat"))),
+                      col.names = c("userId", "movieId", "rating", "timestamp"))
+
+movies <- str_split_fixed(readLines(unzip(dl, "ml-10M100K/movies.dat")), "\\::", 3)
+
+colnames(movies) <- c("movieId", "title", "genres")
+movies <- as.data.frame(movies) %>% mutate(movieId = as.numeric(levels(movieId))[movieId],
+                                           title = as.character(title),
+                                           genres = as.character(genres))
+movielens <- left_join(ratings, movies, by = "movieId")
+
+# Validation set will be 10% of MovieLens data
+set.seed(1)
+test_index <- createDataPartition(y = movielens$rating, times = 1, p = 0.1, list = FALSE)
+edx <- movielens[-test_index,]
+temp <- movielens[test_index,]
+
+# Make sure userId and movieId in validation set are also in edx set
+validation <- temp %>% 
+  semi_join(edx, by = "movieId") %>%
+  semi_join(edx, by = "userId")
+
+# Add rows removed from validation set back into edx set
+removed <- anti_join(temp, validation)
+edx <- rbind(edx, removed)
+
+rm(ratings, movies, test_index, temp, movielens, removed)
+
+# RMSE function
+RMSE <- function(true_ratings, predicted_ratings) {
+  sqrt(mean((true_ratings - predicted_ratings)^2))
+}
+
+# average rating among all movies
+mu <- mean(edx$rating)
+
+# regularization parameter
+lamda <- 5
+
+# regularized movie averages
+movie_reg_avgs <- edx %>%
+  group_by(movieId) %>%
+  summarize(b_i = sum(rating - mu)/(n() + lamda), n_i = n())
+
+# regularized user averages
+user_reg_avgs <- edx %>%
+  left_join(movie_reg_avgs, by = "movieId") %>%
+  group_by(userId) %>%
+  summarize(b_u = sum(rating - mu - b_i)/(n() + lamda))
+
+# movie genres separated into rows and split by individual genre
+movie_data_listed_by_genre <- edx %>% 
+  separate_rows(genres, sep = "\\|") %>%
+  split(., .$genres)
+
+rm(edx)
+
+# genre effect of movie
+genre_classified_movie_reg_avgs <- movie_data_listed_by_genre %>%
+  lapply(function(x) {
+    genre <- x$genres[1] 
+    x %>% 
+      left_join(movie_reg_avgs, by = "movieId") %>%
+      left_join(user_reg_avgs, by = "userId") %>%
+      group_by(movieId) %>% 
+      summarize(b_ig = sum(rating - mu - b_i - b_u)/(n() + lamda), g = genre) 
+  })
+
+# genre effect of user
+genre_classified_user_reg_avgs <- movie_data_listed_by_genre %>%
+  lapply(function(x) {
+    genre <- x$genres[1] 
+    x %>% 
+      left_join(movie_reg_avgs, by = "movieId") %>%
+      left_join(user_reg_avgs, by = "userId") %>%
+      left_join(genre_classified_movie_reg_avgs[[genre]], by = "movieId") %>%
+      group_by(userId) %>%
+      summarize(b_ug = sum(rating - mu - b_i - b_u - b_ig)/(n() + lamda), g = genre)
+  })
+
+# predict rating based on movieId, userId and genre
+predicted_rating <- function(movie_id, user_id, genre) {
+  # if the user has not rated any movies in this genre, then the genre effect for user is 0
+  b_ug <- b_ug <- genre_classified_user_reg_avgs[[genre]] %>% 
+    filter(userId == user_id) %>% .$b_ug
+  if(length(b_ug) == 0) {
+    b_ug <- 0
+  }
+  mu + b_ug +
+    movie_reg_avgs %>% filter(movieId == movie_id) %>% .$b_i +
+    user_reg_avgs %>% filter(userId == user_id) %>% .$b_u +
+    genre_classified_movie_reg_avgs[[genre]] %>% 
+      filter(movieId == movie_id) %>% .$b_ig
+}
+
+# prepare data and call function to predict  
+predicted_ratings_split_by_genre <- function(userId, movieId, genres) {
+  genre <- strsplit(genres, "\\|")[[1]][1]
+  predicted_rating(movieId, userId, genre)
+}
+
+# apply vectors to predict functions
+predicted_model_rating <- mapply(predicted_ratings_split_by_genre, 
+                                 validation$userId,
+                                 validation$movieId,
+                                 validation$genres)
+
+# calculated RMSE
+rmse_calculated <- RMSE(validation$rating, predicted_model_rating)
+```
+
+
+
+
+EXECUTIVE SUMMARY
+
+
+The goal of this project was to come up with a machine learning algorithm to predict what rating a user may give a movie based on movies he/she and other users have rated in the past. The main strategy was reducing the individual movie rating over the mean rating of all movies into different effects or biases.  These effects were then be used to predict movie and user combinations that have not been rated before.  
+
+
+DATA SET
+
+
+The data set included 10 million movie ratings by 69878 users for 10677 movies
+
+
+
+OBSERVATIONS
+
+
+(1) Movies that are better have a better rating that poor movies    which users do not like.  
+
+(2) Different users rate the same movies differntly.
+
+(3) Some movie genres get higher movie ratings than others.
+
+(4) Users rate movies in some genres differently that other genres.
+
+
+
+ANALYSIS
+
+
+The approach taken to finding a solution to this problem was to calculate an average rating for all movies and then decompose the difference between the actual movie rating and the average for all all movies (mu) based on the observations on the data.
+
+This resulted in obtaing the factors that contribute to the rating in the following way.
+
+From observation (1) -> b_i = avg rating (for movie) - mu (movie effect)
+                 (2) -> b_u = avg rating (for user) - mu - bi (user effect)
+                 (3) -> b_ig = avg rating (for movie within genre) - b_i - b_u (movie effect for genre) 
+                 (4) -> b_ug = avg rating (for user within genre) - b_i - b_u - b_ig (user effect for genre) 
+  
+These factors are then stored in separate lists and a prediction is made by adding up the factors:
+
+prediction = mu + b_i + b_u + b_ig + b_ug
+
+
+                
+DATA CLEANSING AND EXPLORATION
+
+
+The following strategies were followed to overcome problems inherent in the data.
+
+1. movieId - was stored in a numeric vector, but some movieIds had a leading space. This made it difficult to vectorize the given dataframe by applying logic to rows of the data set.  To overcome this, vectors of movieId, userId and genres where extracted from the dataframe and applied as vectors using the mapply function.
+
+2. genres - were stored as a list which needed to be separated. It was assumed that the same list of genres where applied to a particular movieId and in the same order as this is usually done in the data cleansing phase.
+
+3. Movies that were rated very few times were rated very high or very low.  In order to penalize such cases, the algorithm regularized the rating with lamda value of 5 (since there are 4 effects that are being regularized a higher value was used)
+
+RESULTS
+
+The final Root Mean Square Error calculated was:
+```{r}
+rmse_results <- data_frame(method = "RMSE for Movie Recommendation Algorithm", RMSE = rmse_calculated)
+rmse_results %>% knitr::kable()
+```
+
+
+VISUALIZATIONS
+
+
+The following plots show how the effects used in the algorithm contributes to an accurate prediction.
+
+```{r pressure, echo=FALSE}
+# visualizations - Movie effect
+movie_reg_avgs %>% ggplot(aes(x = b_i)) + geom_histogram() +
+  labs(x = "Movie Effect") 
+
+# visualizations - User effect
+user_reg_avgs %>% ggplot(aes(x = b_u)) + geom_histogram() +
+  labs(x = "User Effect") 
+
+# functions to generate dataframes for visualizations
+df <- function(x) {
+  data.frame(genre = x[3], effect = x[2]) 
+}
+
+dfs <- function(y) {
+  z <- data.frame()
+  for (i in 1 : length(y)) {
+    x <- df(y[[i]])
+    z <- rbind(z, x)
+  }
+  z
+}
+
+# visualizations - Movie effect for individual movies within a genre
+movie_genre_effs_df <- dfs(genre_classified_movie_reg_avgs)
+
+movie_genre_effs_df %>% ggplot(aes(x = g, y = b_ig)) + 
+  geom_boxplot() + 
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) + 
+  labs(x = "Genre", y = "Movie Effect for Genre") 
+
+# visualizations - User effect for individual users within a genre
+user_genre_effs_df <- dfs(genre_classified_user_reg_avgs)
+
+user_genre_effs_df %>% ggplot(aes(x = g, y = b_ug)) + 
+  geom_boxplot() + 
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+  labs(x = "Genre", y = "User Effect for Genre") 
+```
+
+CONCLUSION
+
+
+The visualization shows that the effects used in the algorithm were significant in recommending movies based on prediction from those effects. There are diffences in movie effects for genres for individual movies as well as their means.  On the other hand even though the means do not change much for user effects for genres, the individual user effects across genres do vary more prominently.  The overall movie effect also shows a left skewed distribution where as the overall user effect is more normally distributed.
+
